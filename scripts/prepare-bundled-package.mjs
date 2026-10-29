@@ -363,6 +363,9 @@ export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = 
     throw new Error(`${sourcePackage.name} does not declare bundled dependencies`);
   }
 
+  if ((sourcePackage.files ?? []).includes("ui-dist") && !existsSync(resolve(sourceDir, "ui-dist")) && sourcePackage.scripts?.["prepare:ui-dist"]) {
+    execFileSync("pnpm", ["run", "prepare:ui-dist"], { cwd: sourceDir, stdio: "inherit" });
+  }
   rmSync(destinationDir, { recursive: true, force: true });
   mkdirSync(destinationDir, { recursive: true });
   for (const entry of sourcePackage.files ?? []) {
