@@ -8,8 +8,8 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 
 // The legacy login-prompt markers. The Claude CLI prints these words when it
-// asks the user to log in. The detector matches them against any probe output
-// line, which includes the raw stdout and stderr. This scope is pre-existing.
+// asks the user to log in. The detector matches them against stderr, plain-text
+// stdout lines, and the CLI's own error events. See detectClaudeLoginRequired.
 const CLAUDE_LOGIN_PROMPT_RE =
   /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login)|login\s+required|requires\s+login|unauthorized|authentication\s+required|invalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
 
@@ -239,6 +239,14 @@ function claudeResultIndicatesAuthFailure(parsed: Record<string, unknown>): bool
   return extractClaudeErrorMessages(parsed).length > 0;
 }
 
+function isClaudeCliStatusLine(line: string): boolean {
+  const event = line.startsWith("{") ? parseJson(line) : null;
+  if (!event || typeof event !== "object" || typeof event.type !== "string") return true;
+  if (event.type === "result") return asBoolean(event.is_error, false);
+  if (event.type === "assistant") return asString(event.error, "").trim().length > 0;
+  return false;
+}
+
 export function detectClaudeLoginRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
@@ -247,14 +255,21 @@ export function detectClaudeLoginRequired(input: {
   const parsed = input.parsed ?? null;
   const resultText = asString(parsed?.result, "").trim();
 
-  // The legacy login-prompt markers keep their broad scope. They match against
-  // every output line, which includes the parsed result, the parsed errors, and
-  // the raw stdout and stderr.
-  const promptLines = [resultText, ...extractClaudeErrorMessages(parsed ?? {}), input.stdout, input.stderr]
-    .join("\n")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  // The login-prompt markers match the parsed result and errors only for a
+  // failed run. In stdout they match plain-text lines and the CLI's own error
+  // events, but never tool results, model text, or system events. A run that
+  // reads code containing "Unauthorized" must not flip the classifier.
+  const failedResultLines =
+    parsed !== null && claudeResultIndicatesAuthFailure(parsed)
+      ? [resultText, ...extractClaudeErrorMessages(parsed)]
+      : [];
+  const splitLines = (text: string) =>
+    text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const promptLines = [
+    ...failedResultLines.flatMap(splitLines),
+    ...splitLines(input.stdout).filter(isClaudeCliStatusLine),
+    ...splitLines(input.stderr),
+  ];
   const loginPrompt = promptLines.some((line) => CLAUDE_LOGIN_PROMPT_RE.test(line));
 
   // The token-failure markers match only against the parsed terminal fields of
