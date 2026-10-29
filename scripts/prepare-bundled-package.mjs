@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const nativeTargets = ["linux-x64", "darwin-arm64", "darwin-x64"];
 
-export function materializePublishManifest(pkg) {
+export function materializePublishManifest(pkg, workspaceVersions = new Map()) {
   const publishConfig = pkg.publishConfig ?? {};
   const publishManifest = { ...pkg };
 
@@ -24,7 +24,7 @@ export function materializePublishManifest(pkg) {
         if (typeof specifier !== "string" || !specifier.startsWith("workspace:")) return [name, specifier];
         const range = specifier.slice("workspace:".length);
         const prefix = range === "^" || range === "~" ? range : "";
-        return [name, `${prefix}${pkg.version}`];
+        return [name, `${prefix}${workspaceVersions.get(name) ?? pkg.version}`];
       }),
     );
   }
@@ -354,6 +354,23 @@ export function applyBundledDependencyPatches(destinationDir, bundledDependencie
   }
 }
 
+function readWorkspaceVersions(sourceRoot) {
+  const versions = new Map();
+  const dirs = ["server", "ui", "cli"];
+  for (const parent of ["packages", "packages/adapters", "packages/plugins", "packages/plugins/examples"]) {
+    const root = resolve(sourceRoot, parent);
+    if (!existsSync(root)) continue;
+    for (const entry of readdirSync(root, { withFileTypes: true })) if (entry.isDirectory()) dirs.push(`${parent}/${entry.name}`);
+  }
+  for (const dir of dirs) {
+    const manifestPath = resolve(sourceRoot, dir, "package.json");
+    if (!existsSync(manifestPath)) continue;
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    if (manifest.name && manifest.version) versions.set(manifest.name, manifest.version);
+  }
+  return versions;
+}
+
 export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = repoRoot } = {}) {
   const sourcePackagePath = resolve(sourceDir, "package.json");
   const sourcePackage = JSON.parse(readFileSync(sourcePackagePath, "utf8"));
@@ -377,7 +394,7 @@ export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = 
   }
 
   const deployedPackagePath = resolve(destinationDir, "package.json");
-  const publishManifest = materializePublishManifest(sourcePackage);
+  const publishManifest = materializePublishManifest(sourcePackage, readWorkspaceVersions(sourceRoot));
   for (const lifecycle of ["prepack", "postpack", "prepare"]) delete publishManifest.scripts?.[lifecycle];
   const rootPackage = JSON.parse(readFileSync(resolve(sourceRoot, "package.json"), "utf8"));
   const profileData = bundledDependencies.includes("@agentclientprotocol/codex-acp")
