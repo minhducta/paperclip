@@ -134,6 +134,65 @@ describe("detectClaudeLoginRequired", () => {
     expect(isClaudeTransientUpstreamError(input)).toBe(true);
   });
 
+  it("classifies the Claude CLI not-logged-in stream as login required", () => {
+    const stdout = [
+      '{"type":"system","subtype":"init","session_id":"s1"}',
+      '{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Not logged in · Please run /login"}]},"error":"authentication_failed"}',
+      '{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login","terminal_reason":"api_error"}',
+    ].join("\n");
+    expect(
+      detectClaudeLoginRequired({ parsed: parseClaudeStreamJson(stdout).resultJson, stdout, stderr: "" })
+        .requiresLogin,
+    ).toBe(true);
+    expect(detectClaudeLoginRequired({ parsed: null, stdout, stderr: "" }).requiresLogin).toBe(true);
+  });
+
+  it("classifies a plain-text not-logged-in stdout line as login required", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "Not logged in · Please run /login",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("does not classify a successful run whose tool output contains a login prompt marker", () => {
+    const stdout = [
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"grep -n StatusUnauthorized client.go"}}]}}',
+      '{"type":"user","message":{"content":[{"type":"tool_result","content":"365:\\tif r.status == http.StatusUnauthorized {"}]}}',
+      '{"type":"system","subtype":"task_notification","summary":"wait until login required banner is gone"}',
+      '{"type":"result","subtype":"success","is_error":false,"result":"Done."}',
+    ].join("\n");
+    expect(
+      detectClaudeLoginRequired({ parsed: parseClaudeStreamJson(stdout).resultJson, stdout, stderr: "" })
+        .requiresLogin,
+    ).toBe(false);
+  });
+
+  it("does not classify a successful run whose result text mentions a login page", () => {
+    const parsed = {
+      is_error: false,
+      subtype: "success",
+      result: "DEV-03: log in on admin-ui /login. Unauthorized requests return 401.",
+    };
+    expect(detectClaudeLoginRequired({ parsed, stdout: "", stderr: "" }).requiresLogin).toBe(false);
+  });
+
+  it("keeps a failed run with a login prompt marker only in tool output off the login lane", () => {
+    const input = {
+      parsed: {
+        is_error: true,
+        subtype: "error_during_execution",
+        result: "API Error: 503 service unavailable",
+      },
+      stdout: '{"type":"user","message":{"content":[{"type":"tool_result","content":"HTTP 401 Unauthorized"}]}}',
+      stderr: "",
+    };
+    expect(detectClaudeLoginRequired(input).requiresLogin).toBe(false);
+    expect(isClaudeTransientUpstreamError(input)).toBe(true);
+  });
+
   it("does not treat a bare token phrase in raw stdout with no parsed result as login required", () => {
     // Untrusted stdout alone must not satisfy a token-failure marker. Only the
     // parsed terminal result fields of a failed run can trip the token markers.
